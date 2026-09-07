@@ -1,8 +1,15 @@
-# run locally
+
+
+
+
+
+# to run and configure the app:
+
+run locally
 
 npm run dev:all
 
-# build and configure applications
+build and configure applications
 
 npm run build
 
@@ -13,12 +20,4 @@ npx electron-builder -mwl
 for mac, windows, linux
 
 npx electron-builder -mwl# AVIPContSysUI
-# AVIPContSysUI# AVIPContSysUI
-# AVIPContSysUI
-# AVIPContSysUI
-# AVIPContSysUI
-# AVIPContSysUI
-# AVIPContSysUI
-# AVIPContSysUI
-# AVIPContSysUI
-# AVIPContSysUI
+
