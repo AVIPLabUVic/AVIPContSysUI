@@ -1,0 +1,275 @@
+import { useEffect, useRef, useState } from 'react';
+import * as echarts from 'echarts';
+
+const powerColor = '#e34948';
+const powerName = 'Power on';
+
+import { fetchAllReadings, fetchRangedReadings } from './utils/DataBaseQuery.jsx';
+
+// get intervals of when power is on from history data
+function getOnIntervals(powerData) {
+  const intervals = [];
+  let start = null;
+  for (let i = 0; i < powerData.length; i++) {
+    const [time, state] = powerData[i];
+    if (state === 1 && start === null) {
+      start = time;
+    } else if (state === 0 && start !== null) {
+      intervals.push([start, time]);
+      start = null;
+    }
+  }
+  if (start !== null && powerData.length) {
+    intervals.push([start, powerData[powerData.length - 1][0]]);
+  }
+  return intervals;
+}
+
+// Puts Database rows into the format { [metricKey]: [[timestamp_ms, value], ...] }
+function rowsToHistory(rows, metrics) {
+  const history = {};
+  metrics.forEach((metric) => {
+    history[metric.key] = [];
+  });
+  history.power = [];
+
+  rows.forEach((row) => {
+    console.log("created at: ", row.created_at);
+    let ts = new Date(row.created_at).getTime();
+    const dp = row.data_point ?? {};
+
+    metrics.forEach((metric) => {
+      history[metric.key].push([ts, dp[metric.key] ?? null]);
+    });
+
+    history.power.push([ts, (dp.pumpPower ?? 0) > 0 ? 1 : 0]);
+  });
+
+  return history;
+}
+
+// Displays all Control System data from database (besides power consumption) in a line chart
+export default function AvipHistoryChart({ metrics, drawRange }) {
+  const chartRef = useRef(null);
+  const chartInstance = useRef(null);
+  const [seriesOn, setSeriesOn] = useState(metrics.map(() => true));
+  const [powerAreaOn, setPowerAreaOn] = useState(true);
+  const [zoomEnabled, setZoomEnabled] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const historyRef = useRef({}); // holds fetched data for buildSeries to read
+
+  // update chart drawing
+  function buildSeries(showPowerArea) {
+    const history = historyRef.current;
+    const onIntervals = getOnIntervals(history.power ?? []);
+    const markAreaData = onIntervals.map(([s, e]) => [{ xAxis: s }, { xAxis: e }]);
+
+    console.log("historyRef: ", historyRef.current);
+
+    console.log("history: ", history);
+
+    return metrics.map((metric, i) => ({
+      name: metric.name,
+      type: 'line',
+      large: true,                 
+      largeThreshold: 5000,         
+      progressive: 5000,            
+      progressiveThreshold: 10000,  
+      smooth: false,                 
+      symbol: 'none',
+      lineStyle: { width: 2, color: metric.color },
+      itemStyle: { color: metric.color },
+      data: history[metric.key] ?? [],
+      markArea: (i === 0 && showPowerArea) ? {
+        silent: true,
+        itemStyle: { color: powerColor, opacity: 0.08 },
+        label: { show: false },
+        data: markAreaData
+      } : { data: [] }
+    }));
+  }
+
+  // check for new chart perameters in user input for update
+  async function refreshData() {
+    setLoading(true);
+    setError(null);
+  try {
+    let rows;
+
+    // check if range has been spesified by the user
+    if (drawRange.allTime == false){
+      rows = await fetchRangedReadings(drawRange.start, drawRange.end);
+      // console.log("got ranged rows");
+    }else{
+      rows = await fetchAllReadings();
+    }
+
+    historyRef.current = rowsToHistory(rows, metrics);
+    chartInstance.current.setOption({ series: buildSeries(powerAreaOn) });
+
+  } catch (err) {
+    setError(err.message);
+
+  } finally {
+    setLoading(false);
+  }
+}
+
+  // initalize chart for the first time
+  useEffect(() => {
+    const chart = echarts.init(chartRef.current);
+    chartInstance.current = chart;
+
+    chart.setOption({
+      useUTC: true,
+      tooltip: {
+        trigger: 'axis',
+        position: (pt) => [pt[0], '10%']
+      },
+      legend: { show: false },
+      toolbox: {
+        feature: {
+          dataZoom: { yAxisIndex: 'none' },
+          restore: {},
+          saveAsImage: {}
+        }
+      },
+      grid: { top: 40, left: 50, right: 30, bottom: 80 },
+      xAxis: { type: 'time', boundaryGap: false },
+      yAxis: { type: 'value', boundaryGap: [0, '100%'] },
+      dataZoom: [
+        { type: 'inside', start: 0, end: 100 },
+        { start: 0, end: 100 }
+      ],
+      series: []
+    });
+
+    const resize = () => chart.resize();
+    window.addEventListener('resize', resize);
+    return () => {
+      window.removeEventListener('resize', resize);
+      chart.dispose();
+    };
+  }, []);
+
+  // get new data at the start
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    fetchAllReadings()
+      .then((rows) => {
+        if (cancelled) return;
+        historyRef.current = rowsToHistory(rows, metrics);
+
+        if (chartInstance.current) {
+          chartInstance.current.setOption({
+            series: buildSeries(powerAreaOn)
+          });
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, []);
+
+
+  // toggle zoom on chart
+  function toggleZoom() {
+    const next = !zoomEnabled;
+    setZoomEnabled(next);
+    if (!chartInstance.current) return;
+
+    if (next) {
+      chartInstance.current.setOption({
+        dataZoom: [
+          { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseWheel: true, moveOnMouseMove: true },
+          { show: true, start: 0, end: 100 }
+        ]
+      });
+    } else {
+      chartInstance.current.setOption({
+        dataZoom: [
+          { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: false, moveOnMouseWheel: false, moveOnMouseMove: false },
+          { show: false, start: 0, end: 100 }
+        ]
+      });
+    }
+  }
+
+
+  // toggle variable on chart
+  function toggleSeries(index) {
+    const next = [...seriesOn];
+    next[index] = !next[index];
+    setSeriesOn(next);
+    chartInstance.current.dispatchAction({
+      type: next[index] ? 'legendSelect' : 'legendUnSelect',
+      name: metrics[index].name
+    });
+  }
+
+  // toggle the power area on chart
+  function togglePowerArea() {
+    const next = !powerAreaOn;
+    setPowerAreaOn(next);
+    chartInstance.current.setOption({ series: buildSeries(next) });
+  }
+
+  
+  return (
+    <div>
+    <button onClick={refreshData}>Refresh Chart</button>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 8, alignItems: 'center' }}>
+        {metrics.map((metric, i) => (
+          <label key={metric.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={seriesOn[i]}
+              onChange={() => toggleSeries(i)}
+              style={{ accentColor: metric.color, cursor: 'pointer' }}
+            />
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: metric.color, display: 'inline-block' }} />
+            {metric.name}
+          </label>
+        ))}
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={powerAreaOn}
+            onChange={togglePowerArea}
+            style={{ accentColor: powerColor, cursor: 'pointer' }}
+          />
+          <span style={{ width: 10, height: 10, borderRadius: 2, background: powerColor, opacity: 0.4, display: 'inline-block' }} />
+          {powerName}
+        </label>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={zoomEnabled}
+            onChange={toggleZoom}
+            style={{ cursor: 'pointer' }}
+          />
+          Zoom
+        </label>
+      </div>
+
+      {loading && <p style={{ fontSize: 13 }}>Loading history…</p>}
+      {error && <p style={{ fontSize: 13, color: 'red' }}>Failed to load: {error}</p>}
+
+      <div style={{ position: "absolute", top: "105px"}} className="box">
+        <div ref={chartRef} style={{ width: '100%', height: 395 }} />
+      </div>
+    </div>
+  );
+}

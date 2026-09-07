@@ -1,0 +1,178 @@
+import { useEffect, useRef, useState, useMemo } from 'react';
+import * as echarts from 'echarts';
+
+// put live history into a shape for the chart
+function extractSeries(history, metrics) {
+  const seriesData = {};
+  metrics.forEach((metric) => {
+    seriesData[metric.key] = (history[metric.key] ?? []).map(([t, v]) => [t, v ?? 0]);
+  });
+
+  return { seriesData };
+}
+
+// Displays all live power comsumption Data in a Bar Chart from a certian time interval
+export default function AvipBarChart({ history, metrics }) {
+  const chartRef = useRef(null);
+  const chartInstance = useRef(null);
+  const [seriesOn, setSeriesOn] = useState(metrics.map(() => true));
+  const [zoomEnabled, setZoomEnabled] = useState(true);
+
+  // Tracks the user's manual zoom/pan window as absolute timestamps,
+  const zoomRef = useRef(null);
+  const zoomEnabledRef = useRef(true);
+
+  // change when zooming into a section of the chart
+  useEffect(() => {
+    zoomEnabledRef.current = zoomEnabled;
+  }, [zoomEnabled]);
+
+
+  const { seriesData } = useMemo(
+    () => extractSeries(history, metrics),
+    [history, metrics]
+  );
+
+  // draws chart
+  function buildSeries() {
+    return metrics.map((metric) => ({
+      name: metric.name,
+      type: 'bar',
+      data: seriesData[metric.key] ?? [],
+      itemStyle: { color: metric.color }
+    }));
+  }
+
+  // create chart on mount
+  useEffect(() => {
+    const chart = echarts.init(chartRef.current);
+    chartInstance.current = chart;
+
+    chart.setOption({
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      legend: { show: false },
+      toolbox: {
+        feature: {
+          dataZoom: { yAxisIndex: 'none' },
+          restore: {},
+          saveAsImage: {}
+        }
+      },
+      grid: { top: 40, left: 50, right: 30, bottom: 80 },
+      xAxis: { type: 'time', boundaryGap: false },
+      yAxis: { type: 'value' },
+      dataZoom: [
+        { type: 'inside', start: 0, end: 100 },
+        { start: 0, end: 100 }
+      ],
+      series: buildSeries()
+    });
+
+ 
+    // Capture users zoom whenever they drag the slider
+    chart.on('datazoom', () => {
+      const opt = chart.getOption();
+      const dz = opt.dataZoom && opt.dataZoom[0];
+      if (dz && dz.startValue != null && dz.endValue != null) {
+        zoomRef.current = { startValue: dz.startValue, endValue: dz.endValue };
+      }
+    });
+
+    const resize = () => chart.resize();
+    window.addEventListener('resize', resize);
+    return () => {
+      window.removeEventListener('resize', resize);
+      chart.dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // update series whenever new payloads arrive
+  useEffect(() => {
+    if (chartInstance.current) {
+      const update = {
+        series: buildSeries()
+      };
+      // pin the same zoom window instead of resetting
+      if (zoomRef.current) {
+        update.dataZoom = [
+          { type: 'inside', startValue: zoomRef.current.startValue, endValue: zoomRef.current.endValue },
+          { startValue: zoomRef.current.startValue, endValue: zoomRef.current.endValue }
+        ];
+      }
+
+      chartInstance.current.setOption(update);
+    }
+  }, [seriesData]);
+
+  function toggleSeries(index) {
+    const next = [...seriesOn];
+    next[index] = !next[index];
+    setSeriesOn(next);
+    chartInstance.current.dispatchAction({
+      type: next[index] ? 'legendSelect' : 'legendUnSelect',
+      name: metrics[index].name
+    });
+  }
+
+  function toggleZoom() {
+    const next = !zoomEnabled;
+    setZoomEnabled(next);
+    zoomRef.current = null; // start fresh each time zoom is toggled
+
+    if (!chartInstance.current) return;
+
+    if (next) {
+      // re-enable dragging/scrolling and show the slider again
+      chartInstance.current.setOption({
+        dataZoom: [
+          { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseWheel: true, moveOnMouseMove: true },
+          { show: true, start: 0, end: 100 }
+        ]
+      });
+    } else {
+      // lock to full range and disable interaction so it can't be
+      chartInstance.current.setOption({
+        dataZoom: [
+          { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: false, moveOnMouseWheel: false, moveOnMouseMove: false },
+          { show: false, start: 0, end: 100 }
+        ]
+      });
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 8, alignItems: 'center' }}>
+        {metrics.map((metric, i) => (
+          <label key={metric.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={seriesOn[i]}
+              onChange={() => toggleSeries(i)}
+              style={{ accentColor: metric.color, cursor: 'pointer' }}
+            />
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: metric.color, display: 'inline-block' }} />
+            {metric.name}
+          </label>
+        ))}
+      </div>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={zoomEnabled}
+            onChange={toggleZoom}
+            style={{ cursor: 'pointer' }}
+          />
+          Zoom
+        </label>
+
+      <div style={{ position: "absolute", top: "75px"}} className="box">
+        <div ref={chartRef} style={{ width: '100%', height: 395 }} />
+      </div>
+
+      
+    </div>
+  );
+}
