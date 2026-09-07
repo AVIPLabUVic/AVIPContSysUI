@@ -1,7 +1,5 @@
 
-
-
-
+React UI running for Dr. Mukhopadhyaya’s lab for research of active vacuum isolation panel technology. This program displays data from a AVIP control system and gives the user to control of the system.
 
 # to run and configure the app:
 
